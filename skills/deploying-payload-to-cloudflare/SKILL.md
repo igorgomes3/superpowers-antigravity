@@ -41,9 +41,15 @@ Create a script (e.g., `scripts/build-worker.sh`) with the following content. Th
 set -e
 
 # 1. Build
-echo "Building Next.js app..."
-npm run build
+# Check if we are being called by OpenNext (which calls 'npm run build' internally)
+if [ "$IS_OPENNEXT_BUILD" = "true" ]; then
+  echo "Running internal Next.js build..."
+  npm run build:next
+  exit 0
+fi
+
 echo "Building OpenNext worker..."
+export IS_OPENNEXT_BUILD=true
 npx opennextjs-cloudflare build
 
 # 2. Prune node_modules
@@ -52,15 +58,14 @@ npx opennextjs-cloudflare build
 echo "Pruning node_modules..."
 rm -rf .open-next/server-functions/default/node_modules
 mkdir -p .open-next/server-functions/default/node_modules
-cp -r node_modules/graphql .open-next/server-functions/default/node_modules/
-cp -r node_modules/prettier .open-next/server-functions/default/node_modules/ || true
-
-rm -rf .open-next/server-functions/default/backend/.next/cache
+# Copy graphql if it exists, as it's often externalized
+if [ -d "node_modules/graphql" ]; then
+  cp -r node_modules/graphql .open-next/server-functions/default/node_modules/
+fi
 
 # 3. Create Empty Stubs
 echo "Creating stubs..."
 # Stub for WASM modules
-# Note: We cannot use new WebAssembly.Module() as it may be disallowed in some environments
 echo "export default {};" > .open-next/server-functions/default/empty_wasm.js
 # Stub for JS libraries (prettier, sharp, etc.)
 echo "export default {};" > .open-next/server-functions/default/empty_lib.js
@@ -136,7 +141,8 @@ Use Cloudflare's native CI/CD integration by connecting your repository in the C
 
 - **Not Pruning**: Leaving `node_modules` will almost always exceed the 3 MiB limit.
 - **Not Patching**: The generated `handler.mjs` will contain absolute paths to the machine where it was built. These paths will fail at runtime on Cloudflare.
-- **Using `pnpm` without `shamefully-hoist`**: Sometimes `pnpm` structure makes pruning harder. `npm` is often simpler for this specific pruning strategy.
+- **Using `pnpm`**: `pnpm`'s symlinked structure can cause issues with pruning and native module resolution (`ERR_DLOPEN_FAILED`). **Use `npm`** for this strategy to ensure a flat `node_modules` structure and better compatibility with Cloudflare's build environment.
+- **Infinite Loops**: If `npm run build` calls this script, and this script calls `npx opennextjs-cloudflare build`, which calls `npm run build` again, you will get an infinite loop. Ensure you have a re-entry guard (as shown in the script above).
 
 ## References
 
